@@ -3,6 +3,15 @@ from __future__ import annotations
 
 from typing import Optional, Tuple
 
+from .constants import (
+    MAX_PRESSURE_DAPA,
+    MIN_PRESSURE_DAPA,
+    PRESSURE_SOURCE_CV_FALLBACK,
+    PRESSURE_SOURCE_CV_REJECTED_RANGE,
+    PRESSURE_SOURCE_NO_RESULT,
+    PRESSURE_SOURCE_OCR_OK,
+)
+
 
 def merge_pressure(
     ocr_pressure: Optional[float],
@@ -22,17 +31,17 @@ def merge_pressure(
         - cv_rejected_range
     """
     # 1) OCR có số hợp lệ -> ưu tiên OCR luôn
-    if ocr_pressure is not None and (-600.0 <= ocr_pressure <= 300.0):
-        return ocr_pressure, "ocr_ok"
+    if ocr_pressure is not None and (MIN_PRESSURE_DAPA <= ocr_pressure <= MAX_PRESSURE_DAPA):
+        return ocr_pressure, PRESSURE_SOURCE_OCR_OK
 
     # 2) OCR fail -> mới xét CV
     if cv_pressure is None:
-        return None, "no_result"
+        return None, PRESSURE_SOURCE_NO_RESULT
 
     if cv_quality is None or cv_quality < 0.70:
-        return None, "no_result"
+        return None, PRESSURE_SOURCE_NO_RESULT
 
-    if not (-600.0 <= cv_pressure <= 300.0):
-        return None, "cv_rejected_range"
+    if not (MIN_PRESSURE_DAPA <= cv_pressure <= MAX_PRESSURE_DAPA):
+        return None, PRESSURE_SOURCE_CV_REJECTED_RANGE
 
-    return cv_pressure, "cv_fallback"
+    return cv_pressure, PRESSURE_SOURCE_CV_FALLBACK

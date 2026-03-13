@@ -16,81 +16,9 @@ from .interpretation import (
 )
 from .quality import compute_tymp_quality, to_dict as quality_to_dict
 from .bilateral_rules import detect_bilateral_pattern, to_dict as bilateral_to_dict
-
-
-def _build_flags_from_extraction(side_obj) -> Dict[str, Any]:
-    """
-    Gắn cờ chất lượng cơ bản từ extraction raw.
-    Giữ tương thích với logic cũ.
-    """
-    raw = (getattr(side_obj, "raw_text", None) or "").lower()
-    has_volume = "vol" in raw
-    has_compliance = "compl" in raw
-    has_pressure = "press" in raw
-    has_gradient = "grad" in raw
-
-    missing = []
-
-    volume_ml = getattr(side_obj, "volume_ml", None)
-    compliance_ml = getattr(side_obj, "compliance_ml", None)
-    pressure_dapa = getattr(side_obj, "pressure_dapa", None)
-    gradient_dapa = getattr(side_obj, "gradient_dapa", None)
-
-    if volume_ml is None:
-        missing.append("volume_ml")
-    if compliance_ml is None:
-        missing.append("compliance_ml")
-    if pressure_dapa is None:
-        missing.append("pressure_dapa")
-    if gradient_dapa is None:
-        missing.append("gradient_dapa")
-
-    return {
-        "missing_fields": missing,
-        "raw_has_labels": {
-            "volume": has_volume,
-            "compliance": has_compliance,
-            "pressure": has_pressure,
-            "gradient": has_gradient,
-        },
-        "raw_len": len(raw),
-    }
-
-
-def _map_side_obj_to_standard(
-    side_obj,
-    final_pressure: Optional[float],
-    pressure_source: str,
-    cv_result,
-) -> Dict[str, Any]:
-    """
-    Map extraction object hiện tại sang schema chuẩn output của project.
-    Chuẩn field name đầu ra:
-      - ecv_ml
-      - compliance_ml
-      - pressure_dapa
-      - pressure_source
-      - gradient_dapa
-    """
-    ecv_ml = getattr(side_obj, "volume_ml", None)  # extraction raw vẫn giữ volume_ml
-    compliance_ml = getattr(side_obj, "compliance_ml", None)
-    gradient_dapa = getattr(side_obj, "gradient_dapa", None)
-    raw_text = getattr(side_obj, "raw_text", None)
-
-    return {
-        "ecv_ml": ecv_ml,
-        "compliance_ml": compliance_ml,
-        "pressure_dapa": final_pressure,
-        "pressure_source": pressure_source,
-        "gradient_dapa": gradient_dapa,
-        "raw_text": raw_text,
-        "quality_flags": _build_flags_from_extraction(side_obj),
-        "debug": {
-            "pressure_ocr": getattr(side_obj, "pressure_dapa", None),
-            "pressure_cv": getattr(cv_result, "peak_pressure_dapa", None),
-            "cv_quality": getattr(cv_result, "quality", None),
-        },
-    }
+from .normalize import normalize_side_data
+from .output import build_tymp_side_output, build_tymp_result
+from .constants import DEFAULT_SCHEMA_VERSION
 
 
 def run_tymp_pipeline(
@@ -138,10 +66,32 @@ def run_tymp_pipeline(
     )
 
     # ----------------------------
-    # 4) Map raw data -> standard schema
+    # 4) Normalize raw data -> standard metrics
     # ----------------------------
-    raw_r = _map_side_obj_to_standard(right_obj, final_pr, src_pr, cv_r)
-    raw_l = _map_side_obj_to_standard(left_obj, final_pl, src_pl, cv_l)
+    raw_r = normalize_side_data(
+        side_obj=right_obj,
+        pressure_value=final_pr,
+        pressure_source=src_pr,
+    )
+    raw_l = normalize_side_data(
+        side_obj=left_obj,
+        pressure_value=final_pl,
+        pressure_source=src_pl,
+    )
+
+    raw_text_r = getattr(right_obj, "raw_text", None)
+    raw_text_l = getattr(left_obj, "raw_text", None)
+
+    debug_r = {
+        "pressure_ocr": getattr(right_obj, "pressure_dapa", None),
+        "pressure_cv": getattr(cv_r, "peak_pressure_dapa", None),
+        "cv_quality": getattr(cv_r, "quality", None),
+    }
+    debug_l = {
+        "pressure_ocr": getattr(left_obj, "pressure_dapa", None),
+        "pressure_cv": getattr(cv_l, "peak_pressure_dapa", None),
+        "cv_quality": getattr(cv_l, "quality", None),
+    }
 
     # ----------------------------
     # 5) Rule classification
@@ -190,8 +140,8 @@ def run_tymp_pipeline(
         pressure_dapa=raw_r["pressure_dapa"],
         gradient_dapa=raw_r["gradient_dapa"],
         pressure_source=raw_r["pressure_source"],
-        cv_quality=raw_r["debug"].get("cv_quality"),
-        raw_text=raw_r["raw_text"],
+        cv_quality=debug_r.get("cv_quality"),
+        raw_text=raw_text_r,
         jerger_type=cls_r.jerger_type,
         rule_confidence=cls_r.confidence,
     )
@@ -201,8 +151,8 @@ def run_tymp_pipeline(
         pressure_dapa=raw_l["pressure_dapa"],
         gradient_dapa=raw_l["gradient_dapa"],
         pressure_source=raw_l["pressure_source"],
-        cv_quality=raw_l["debug"].get("cv_quality"),
-        raw_text=raw_l["raw_text"],
+        cv_quality=debug_l.get("cv_quality"),
+        raw_text=raw_text_l,
         jerger_type=cls_l.jerger_type,
         rule_confidence=cls_l.confidence,
     )
@@ -218,66 +168,65 @@ def run_tymp_pipeline(
     # ----------------------------
     # 9) Build JSON-ready result
     # ----------------------------
-    result = {
-        "meta": {
-            "source_pdf": source_pdf,
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "page_index_tymp": page_index,
-            "zoom": zoom,
-            "schema_version": "tymp_v1",
-            "engine": {
-                "ocr": "tesseract",
-                "cv_pressure": "optional_fallback_only",
-            },
-            "active_cfg": cfg,
+    interp_r_dict = interpretation_to_dict(interp_r)
+    interp_l_dict = interpretation_to_dict(interp_l)
+
+    right_output = build_tymp_side_output(
+        normalized_metrics=raw_r,
+        classification=cls_to_dict(cls_r),
+        interpretation=interp_r_dict,
+        quality=quality_to_dict(quality_r),
+        raw_text=raw_text_r,
+        debug=debug_r,
+    )
+    left_output = build_tymp_side_output(
+        normalized_metrics=raw_l,
+        classification=cls_to_dict(cls_l),
+        interpretation=interp_l_dict,
+        quality=quality_to_dict(quality_l),
+        raw_text=raw_text_l,
+        debug=debug_l,
+    )
+
+    meta = {
+        "source_pdf": source_pdf,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "page_index_tymp": page_index,
+        "zoom": zoom,
+        "schema_version": DEFAULT_SCHEMA_VERSION,
+        "engine": {
+            "ocr": "tesseract",
+            "cv_pressure": "optional_fallback_only",
         },
-        "right": {
-            "ecv_ml": raw_r["ecv_ml"],
-            "compliance_ml": raw_r["compliance_ml"],
-            "pressure_dapa": raw_r["pressure_dapa"],
-            "pressure_source": raw_r["pressure_source"],
-            "gradient_dapa": raw_r["gradient_dapa"],
-            "raw_text": raw_r["raw_text"],
-            "quality_flags": raw_r["quality_flags"],
-            "debug": raw_r["debug"],
-            "tymp_classification": cls_to_dict(cls_r),
-            "interpretation": interpretation_to_dict(interp_r),
-            "quality": quality_to_dict(quality_r),
+        "active_cfg": cfg,
+    }
+
+    ui_artifacts = {
+        "right_box": right_box,
+        "left_box": left_box,
+        "page_img": page_img,
+        "cv_right": {
+            "peak_pressure_dapa": getattr(cv_r, "peak_pressure_dapa", None),
+            "quality": getattr(cv_r, "quality", None),
+            "debug": getattr(cv_r, "debug", {}),
         },
-        "left": {
-            "ecv_ml": raw_l["ecv_ml"],
-            "compliance_ml": raw_l["compliance_ml"],
-            "pressure_dapa": raw_l["pressure_dapa"],
-            "pressure_source": raw_l["pressure_source"],
-            "gradient_dapa": raw_l["gradient_dapa"],
-            "raw_text": raw_l["raw_text"],
-            "quality_flags": raw_l["quality_flags"],
-            "debug": raw_l["debug"],
-            "tymp_classification": cls_to_dict(cls_l),
-            "interpretation": interpretation_to_dict(interp_l),
-            "quality": quality_to_dict(quality_l),
-        },
-        "bilateral_pattern": bilateral_to_dict(bilateral),
-        "overall_summary": overall,
-        # compatibility top-level keys theo app cũ
-        "interpretation_right": interpretation_to_dict(interp_r),
-        "interpretation_left": interpretation_to_dict(interp_l),
-        # UI-only
-        "_ui": {
-            "right_box": right_box,
-            "left_box": left_box,
-            "page_img": page_img,
-            "cv_right": {
-                "peak_pressure_dapa": getattr(cv_r, "peak_pressure_dapa", None),
-                "quality": getattr(cv_r, "quality", None),
-                "debug": getattr(cv_r, "debug", {}),
-            },
-            "cv_left": {
-                "peak_pressure_dapa": getattr(cv_l, "peak_pressure_dapa", None),
-                "quality": getattr(cv_l, "quality", None),
-                "debug": getattr(cv_l, "debug", {}),
-            },
+        "cv_left": {
+            "peak_pressure_dapa": getattr(cv_l, "peak_pressure_dapa", None),
+            "quality": getattr(cv_l, "quality", None),
+            "debug": getattr(cv_l, "debug", {}),
         },
     }
+
+    result = build_tymp_result(
+        meta=meta,
+        right=right_output,
+        left=left_output,
+        bilateral_pattern=bilateral_to_dict(bilateral),
+        overall_summary=overall,
+        interpretation_right=interp_r_dict,
+        interpretation_left=interp_l_dict,
+        ui_artifacts=ui_artifacts,
+        warnings=[],
+    )
 
     return result
