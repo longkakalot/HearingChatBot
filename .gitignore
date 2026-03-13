@@ -33,3 +33,4 @@ config_local.py
 outputs/
 reviewed/
 data/debug/
+requirements_full.txt
