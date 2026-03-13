@@ -1,8 +1,6 @@
 # modules/dataset/dataset_explorer.py
 from __future__ import annotations
 
-import os
-import json
 from typing import Dict, Any, List
 
 import pandas as pd
@@ -18,74 +16,10 @@ from modules.dataset.common import (
     get_interpretation,
     get_ecv,
 )
-
-
-def load_tymp_json_files(out_dir: str) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-
-    if not os.path.isdir(out_dir):
-        return rows
-
-    for fn in sorted(os.listdir(out_dir), reverse=True):
-        if not fn.lower().endswith(".json"):
-            continue
-
-        full_path = os.path.join(out_dir, fn)
-
-        # bỏ qua folder reviewed nếu vô tình lẫn file path khác logic
-        if os.path.isdir(full_path):
-            continue
-
-        try:
-            with open(full_path, "r", encoding="utf-8") as f:
-                obj = json.load(f)
-
-            right = safe_get(obj, "right", default={}) or {}
-            left = safe_get(obj, "left", default={}) or {}
-
-            row = {
-                "file_name": fn,
-                "full_path": full_path,
-                "created_at": safe_get(obj, "meta", "created_at"),
-                "source_pdf": safe_get(obj, "meta", "source_pdf"),
-
-                "right_type": get_side_type(right),
-                "left_type": get_side_type(left),
-
-                "right_quality_score": get_side_quality_score(right),
-                "left_quality_score": get_side_quality_score(left),
-
-                "right_reliability": get_side_reliability(right),
-                "left_reliability": get_side_reliability(left),
-
-                "right_pressure_source": get_pressure_source(right),
-                "left_pressure_source": get_pressure_source(left),
-
-                "overall_summary": safe_get(obj, "overall_summary"),
-                "bilateral_pattern": safe_get(obj, "bilateral_pattern", "pattern"),
-            }
-
-            rows.append(row)
-
-        except Exception as e:
-            rows.append({
-                "file_name": fn,
-                "full_path": full_path,
-                "created_at": None,
-                "source_pdf": None,
-                "right_type": "ERROR",
-                "left_type": "ERROR",
-                "right_quality_score": None,
-                "left_quality_score": None,
-                "right_reliability": None,
-                "left_reliability": None,
-                "right_pressure_source": None,
-                "left_pressure_source": None,
-                "overall_summary": f"JSON parse error: {e}",
-                "bilateral_pattern": None,
-            })
-
-    return rows
+from modules.dataset.repository import (
+    load_tymp_case_rows,
+    load_case_by_path,
+)
 
 
 def rows_to_dataframe(rows: List[Dict[str, Any]]) -> pd.DataFrame:
@@ -137,7 +71,7 @@ def _type_options(df: pd.DataFrame, col: str) -> List[str]:
 def render_dataset_explorer(out_dir: str):
     st.subheader("Dataset Explorer")
 
-    rows = load_tymp_json_files(out_dir)
+    rows = load_tymp_case_rows(out_dir)
     df = rows_to_dataframe(rows)
 
     st.caption(f"Số file JSON tìm thấy: {len(df)}")
@@ -242,66 +176,64 @@ def render_dataset_explorer(out_dir: str):
     row = filtered[filtered["file_name"] == selected_file].iloc[0]
     full_path = row["full_path"]
 
-    try:
-        with open(full_path, "r", encoding="utf-8") as f:
-            case_obj = json.load(f)
+    case_obj = load_case_by_path(full_path)
+    if case_obj is None:
+        st.error("Không đọc được file JSON.")
+        return
 
-        right = safe_get(case_obj, "right", default={}) or {}
-        left = safe_get(case_obj, "left", default={}) or {}
+    right = safe_get(case_obj, "right", default={}) or {}
+    left = safe_get(case_obj, "left", default={}) or {}
 
-        c_left, c_right = st.columns(2)
+    c_left, c_right = st.columns(2)
 
-        with c_left:
-            st.markdown("#### Right")
-            st.write({
-                "Type": get_side_type(right),
-                "Rule confidence": get_side_rule_confidence(right),
-                "Quality score": get_side_quality_score(right),
-                "Reliability": get_side_reliability(right),
-                "ECV": get_ecv(right),
-                "Compliance": right.get("compliance_ml"),
-                "Pressure": right.get("pressure_dapa"),
-                "Gradient": right.get("gradient_dapa"),
-                "Pressure source": get_pressure_source(right),
-            })
-
-            interp_r = get_interpretation(right)
-            if interp_r:
-                st.markdown("**Interpretation**")
-                st.write(interp_r.get("summary_vi"))
-                if interp_r.get("red_flags"):
-                    st.warning("\n".join([f"- {x}" for x in interp_r["red_flags"]]))
-
-        with c_right:
-            st.markdown("#### Left")
-            st.write({
-                "Type": get_side_type(left),
-                "Rule confidence": get_side_rule_confidence(left),
-                "Quality score": get_side_quality_score(left),
-                "Reliability": get_side_reliability(left),
-                "ECV": get_ecv(left),
-                "Compliance": left.get("compliance_ml"),
-                "Pressure": left.get("pressure_dapa"),
-                "Gradient": left.get("gradient_dapa"),
-                "Pressure source": get_pressure_source(left),
-            })
-
-            interp_l = get_interpretation(left)
-            if interp_l:
-                st.markdown("**Interpretation**")
-                st.write(interp_l.get("summary_vi"))
-                if interp_l.get("red_flags"):
-                    st.warning("\n".join([f"- {x}" for x in interp_l["red_flags"]]))
-
-        st.markdown("#### Bilateral / Overall")
+    with c_left:
+        st.markdown("#### Right")
         st.write({
-            "Bilateral pattern": safe_get(case_obj, "bilateral_pattern", "pattern"),
-            "Clinical suggestion": safe_get(case_obj, "bilateral_pattern", "clinical_suggestion"),
-            "Overall summary": safe_get(case_obj, "overall_summary"),
+            "Type": get_side_type(right),
+            "Rule confidence": get_side_rule_confidence(right),
+            "Quality score": get_side_quality_score(right),
+            "Reliability": get_side_reliability(right),
+            "ECV": get_ecv(right),
+            "Compliance": right.get("compliance_ml"),
+            "Pressure": right.get("pressure_dapa"),
+            "Gradient": right.get("gradient_dapa"),
+            "Pressure source": get_pressure_source(right),
         })
 
-        with st.expander("Xem toàn bộ JSON", expanded=False):
-            st.json(case_obj)
+        interp_r = get_interpretation(right)
+        if interp_r:
+            st.markdown("**Interpretation**")
+            st.write(interp_r.get("summary_vi"))
+            if interp_r.get("red_flags"):
+                st.warning("\n".join([f"- {x}" for x in interp_r["red_flags"]]))
 
-    except Exception as e:
-        st.error(f"Không đọc được file JSON: {e}")
+    with c_right:
+        st.markdown("#### Left")
+        st.write({
+            "Type": get_side_type(left),
+            "Rule confidence": get_side_rule_confidence(left),
+            "Quality score": get_side_quality_score(left),
+            "Reliability": get_side_reliability(left),
+            "ECV": get_ecv(left),
+            "Compliance": left.get("compliance_ml"),
+            "Pressure": left.get("pressure_dapa"),
+            "Gradient": left.get("gradient_dapa"),
+            "Pressure source": get_pressure_source(left),
+        })
+
+        interp_l = get_interpretation(left)
+        if interp_l:
+            st.markdown("**Interpretation**")
+            st.write(interp_l.get("summary_vi"))
+            if interp_l.get("red_flags"):
+                st.warning("\n".join([f"- {x}" for x in interp_l["red_flags"]]))
+
+    st.markdown("#### Bilateral / Overall")
+    st.write({
+        "Bilateral pattern": safe_get(case_obj, "bilateral_pattern", "pattern"),
+        "Clinical suggestion": safe_get(case_obj, "bilateral_pattern", "clinical_suggestion"),
+        "Overall summary": safe_get(case_obj, "overall_summary"),
+    })
+
+    with st.expander("Xem toàn bộ JSON", expanded=False):
+        st.json(case_obj)
