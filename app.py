@@ -7,6 +7,7 @@ import fitz
 from PIL import Image
 
 from modules.ocr import set_tesseract_path
+from modules.common.app_utils import safe_filename, make_json_safe_result
 
 # ---- Tymp domain (new structure) ----
 from modules.tymp.config import DEFAULT_TYMP_CFG as TYMP_CFG
@@ -19,26 +20,20 @@ from modules.dataset.case_review import render_case_review
 from modules.dataset.evaluation import render_evaluation_dashboard
 
 
-def safe_filename(name: str) -> str:
-    keep = []
-    for ch in name:
-        if ch.isalnum() or ch in (" ", "_", "-", ".", "(", ")", "[", "]"):
-            keep.append(ch)
-        else:
-            keep.append("_")
-    return "".join(keep).strip()
+# ----------------------------
+# App-level constants
+# ----------------------------
+APP_TITLE = "🦻 Hearing ChatBot"
+PAGE_TITLE = "Hearing ChatBot"
+DEFAULT_OUT_DIR = "outputs"
+DEFAULT_TYMP_PAGE_INDEX = 1
+DEFAULT_ZOOM = 3.0
+DEFAULT_TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 
-def make_json_safe_result(result: dict) -> dict:
-    """
-    Remove UI-only objects (PIL images, ROI images...) before JSON dump.
-    """
-    result_to_save = json.loads(json.dumps(
-        {k: v for k, v in result.items() if k != "_ui"},
-        ensure_ascii=False,
-        default=str
-    ))
-    return result_to_save
+def ensure_output_dir(path: str) -> str:
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def render_tymp_result(result: dict, debug: bool = False):
@@ -211,79 +206,108 @@ def render_tymp_result(result: dict, debug: bool = False):
         st.json(make_json_safe_result(result))
 
 
-# ----------------------------
-# Streamlit UI
-# ----------------------------
-st.set_page_config(page_title="Hearing ChatBot", layout="wide")
-st.title("🦻 Hearing ChatBot")
-
-tab1, tab2, tab3, tab4 = st.tabs([
-    "Phân tích PDF",
-    "Dataset Explorer",
-    "Case Review",
-    "Evaluation",
-])
-
-with tab1:
-    # chỉnh đúng path tesseract của anh
-    set_tesseract_path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+def render_pdf_analysis_tab():
+    set_tesseract_path(DEFAULT_TESSERACT_PATH)
 
     uploaded_file = st.file_uploader("Chọn file PDF (scan)", type=["pdf"], key="pdf_uploader_main")
     debug = st.checkbox("Debug: hiển thị vùng crop / OCR raw / CV debug", value=False, key="debug_main")
 
-    OUT_DIR = "outputs"
-    os.makedirs(OUT_DIR, exist_ok=True)
+    out_dir = ensure_output_dir(DEFAULT_OUT_DIR)
+    active_cfg = build_tuning_sidebar(TYMP_CFG, out_dir)
 
-    ACTIVE_CFG = build_tuning_sidebar(TYMP_CFG, OUT_DIR)
+    if "last_result" not in st.session_state:
+        st.session_state.last_result = None
+    if "last_run_key" not in st.session_state:
+        st.session_state.last_run_key = None
+    if "last_saved_path" not in st.session_state:
+        st.session_state.last_saved_path = None
 
-    if uploaded_file:
-        pdf_bytes = uploaded_file.read()
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    if not uploaded_file:
+        return
 
-        # Với mẫu hiện tại của anh: nhĩ lượng đồ ở trang 2
-        page_index = 1
-        page = doc.load_page(page_index)
+    pdf_bytes = uploaded_file.getvalue()
 
-        zoom = 3.0
-        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
-        page_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    # run_key nhận diện duy nhất cho file + config hiện tại
+    cfg_key = json.dumps(active_cfg, ensure_ascii=False, sort_keys=True, default=str)
+    run_key = f"{uploaded_file.name}_{len(pdf_bytes)}_{cfg_key}"
 
-        # ---- Run full tymp pipeline ----
-        result = run_tymp_pipeline(
-            page_img=page_img,
-            cfg=ACTIVE_CFG,
-            source_pdf=uploaded_file.name,
-            page_index=page_index,
-            zoom=zoom,
-            debug=debug,
-        )
+    col_a, col_b = st.columns([1, 3])
+    with col_a:
+        run_clicked = st.button("Phân tích PDF", type="primary")
+    with col_b:
+        st.caption("Cùng file + cùng config sẽ không lưu lặp lại.")
 
-        # ---- Render UI ----
-        render_tymp_result(result, debug=debug)
+    if run_clicked:
+        # Nếu cùng file + cùng config như lần trước thì không chạy/lưu lại
+        if st.session_state.last_run_key == run_key and st.session_state.last_result is not None:
+            st.info("File này với cấu hình hiện tại đã được phân tích trước đó. Không lưu thêm bản mới.")
+        else:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
-        # ---- Save JSON ----
-        base_name = safe_filename(uploaded_file.name.replace(".pdf", ""))
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_path = os.path.join(OUT_DIR, f"{base_name}_tymp_{ts}.json")
+            page_index = DEFAULT_TYMP_PAGE_INDEX
+            page = doc.load_page(page_index)
 
-        result_to_save = make_json_safe_result(result)
+            zoom = DEFAULT_ZOOM
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+            page_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(result_to_save, f, ensure_ascii=False, indent=2)
+            result = run_tymp_pipeline(
+                page_img=page_img,
+                cfg=active_cfg,
+                source_pdf=uploaded_file.name,
+                page_index=page_index,
+                zoom=zoom,
+                debug=debug,
+            )
 
-        st.success(f"Đã lưu kết quả JSON: {out_path}")
+            base_name = safe_filename(uploaded_file.name.replace(".pdf", ""))
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_path = os.path.join(out_dir, f"{base_name}_tymp_{ts}.json")
 
-with tab2:
-    OUT_DIR = "outputs"
-    os.makedirs(OUT_DIR, exist_ok=True)
-    render_dataset_explorer(OUT_DIR)
+            result_to_save = make_json_safe_result(result)
 
-with tab3:
-    OUT_DIR = "outputs"
-    os.makedirs(OUT_DIR, exist_ok=True)
-    render_case_review(OUT_DIR)
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(result_to_save, f, ensure_ascii=False, indent=2)
 
-with tab4:
-    OUT_DIR = "outputs"
-    os.makedirs(OUT_DIR, exist_ok=True)
-    render_evaluation_dashboard(OUT_DIR)
+            st.session_state.last_result = result
+            st.session_state.last_run_key = run_key
+            st.session_state.last_saved_path = out_path
+
+            st.success(f"Đã lưu kết quả JSON: {out_path}")
+
+    if st.session_state.last_result is not None and st.session_state.last_run_key == run_key:
+        render_tymp_result(st.session_state.last_result, debug=debug)
+
+        if st.session_state.last_saved_path:
+            st.info(f"File JSON đã lưu: {st.session_state.last_saved_path}")
+
+
+def render_dataset_tabs():
+    out_dir = ensure_output_dir(DEFAULT_OUT_DIR)
+
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "Phân tích PDF",
+        "Dataset Explorer",
+        "Case Review",
+        "Evaluation",
+    ])
+
+    with tab1:
+        render_pdf_analysis_tab()
+
+    with tab2:
+        render_dataset_explorer(out_dir)
+
+    with tab3:
+        render_case_review(out_dir)
+
+    with tab4:
+        render_evaluation_dashboard(out_dir)
+
+
+# ----------------------------
+# Streamlit UI entry
+# ----------------------------
+st.set_page_config(page_title=PAGE_TITLE, layout="wide")
+st.title(APP_TITLE)
+render_dataset_tabs()
