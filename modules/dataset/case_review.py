@@ -1,7 +1,6 @@
 # modules/dataset/case_review.py
 from __future__ import annotations
 
-import os
 import json
 from datetime import datetime
 from typing import Dict, Any, List
@@ -17,58 +16,16 @@ from modules.dataset.common import (
     get_interpretation,
     get_ecv,
 )
+from modules.dataset.repository import (
+    ensure_dir,
+    load_review_case_rows,
+    load_case_by_path,
+    save_reviewed_case,
+    list_reviewed_json_files,
+)
 
 
 JERGER_OPTIONS = ["A", "As", "Ad", "B", "C", "Unknown"]
-
-
-def load_case_jsons(out_dir: str) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-
-    if not os.path.isdir(out_dir):
-        return rows
-
-    for fn in sorted(os.listdir(out_dir), reverse=True):
-        if not fn.lower().endswith(".json"):
-            continue
-
-        full_path = os.path.join(out_dir, fn)
-
-        if os.path.isdir(full_path):
-            continue
-
-        try:
-            with open(full_path, "r", encoding="utf-8") as f:
-                obj = json.load(f)
-
-            right = safe_get(obj, "right", default={}) or {}
-            left = safe_get(obj, "left", default={}) or {}
-
-            rows.append({
-                "file_name": fn,
-                "full_path": full_path,
-                "created_at": safe_get(obj, "meta", "created_at"),
-                "source_pdf": safe_get(obj, "meta", "source_pdf"),
-                "right_type": get_side_type(right),
-                "left_type": get_side_type(left),
-                "right_quality": get_side_quality_score(right),
-                "left_quality": get_side_quality_score(left),
-            })
-
-        except Exception as e:
-            rows.append({
-                "file_name": fn,
-                "full_path": full_path,
-                "created_at": None,
-                "source_pdf": None,
-                "right_type": "ERROR",
-                "left_type": "ERROR",
-                "right_quality": None,
-                "left_quality": None,
-                "error": str(e),
-            })
-
-    return rows
 
 
 def rows_to_df(rows: List[Dict[str, Any]]) -> pd.DataFrame:
@@ -86,27 +43,12 @@ def rows_to_df(rows: List[Dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _save_reviewed_case(case_obj: Dict[str, Any], reviewed_dir: str, original_file_name: str) -> str:
-    os.makedirs(reviewed_dir, exist_ok=True)
-
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_name = original_file_name.rsplit(".", 1)[0]
-    out_name = f"{base_name}_reviewed_{ts}.json"
-    out_path = os.path.join(reviewed_dir, out_name)
-
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(case_obj, f, ensure_ascii=False, indent=2)
-
-    return out_path
-
-
 def render_case_review(out_dir: str):
     st.subheader("Case Review / Relabel")
 
-    reviewed_dir = os.path.join(out_dir, "reviewed")
-    os.makedirs(reviewed_dir, exist_ok=True)
+    reviewed_dir = ensure_dir(f"{out_dir}/reviewed")
 
-    rows = load_case_jsons(out_dir)
+    rows = load_review_case_rows(out_dir)
     df = rows_to_df(rows)
 
     # loại các file nằm trong outputs/reviewed nếu lẫn logic path
@@ -170,11 +112,9 @@ def render_case_review(out_dir: str):
     selected_row = filtered[filtered["file_name"] == selected_file].iloc[0]
     full_path = selected_row["full_path"]
 
-    try:
-        with open(full_path, "r", encoding="utf-8") as f:
-            case_obj = json.load(f)
-    except Exception as e:
-        st.error(f"Không đọc được JSON: {e}")
+    case_obj = load_case_by_path(full_path)
+    if case_obj is None:
+        st.error("Không đọc được JSON.")
         return
 
     right = safe_get(case_obj, "right", default={}) or {}
@@ -289,17 +229,14 @@ def render_case_review(out_dir: str):
             "is_doctor_confirmed": doctor_confirmed,
         }
 
-        out_path = _save_reviewed_case(reviewed_obj, reviewed_dir, selected_file)
+        out_path = save_reviewed_case(reviewed_obj, reviewed_dir, selected_file)
         st.success(f"Đã lưu reviewed case: {out_path}")
 
     with st.expander("Xem JSON hiện tại", expanded=False):
         st.json(case_obj)
 
     st.markdown("### Reviewed dataset files")
-    reviewed_files = sorted(
-        [x for x in os.listdir(reviewed_dir) if x.lower().endswith(".json")],
-        reverse=True
-    )
+    reviewed_files = list_reviewed_json_files(reviewed_dir)
     if reviewed_files:
         st.write(reviewed_files[:30])
     else:

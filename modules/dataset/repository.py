@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import json
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 
 from modules.dataset.common import (
@@ -12,6 +13,11 @@ from modules.dataset.common import (
     get_side_reliability,
     get_pressure_source,
 )
+
+
+def ensure_dir(path: str) -> str:
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def list_json_files(out_dir: str) -> List[str]:
@@ -32,9 +38,26 @@ def list_json_files(out_dir: str) -> List[str]:
     return files
 
 
+def list_reviewed_json_files(reviewed_dir: str) -> List[str]:
+    if not os.path.isdir(reviewed_dir):
+        return []
+
+    return sorted(
+        [x for x in os.listdir(reviewed_dir) if x.lower().endswith(".json")],
+        reverse=True
+    )
+
+
 def load_json_file(full_path: str) -> Dict[str, Any]:
     with open(full_path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def load_case_by_path(full_path: str) -> Optional[Dict[str, Any]]:
+    try:
+        return load_json_file(full_path)
+    except Exception:
+        return None
 
 
 def build_case_summary_row(full_path: str) -> Dict[str, Any]:
@@ -89,8 +112,36 @@ def load_tymp_case_rows(out_dir: str) -> List[Dict[str, Any]]:
     return rows
 
 
-def load_case_by_path(full_path: str) -> Optional[Dict[str, Any]]:
-    try:
-        return load_json_file(full_path)
-    except Exception:
-        return None
+def build_review_case_row(full_path: str) -> Dict[str, Any]:
+    row = build_case_summary_row(full_path)
+    return {
+        "file_name": row.get("file_name"),
+        "full_path": row.get("full_path"),
+        "created_at": row.get("created_at"),
+        "source_pdf": row.get("source_pdf"),
+        "right_type": row.get("right_type"),
+        "left_type": row.get("left_type"),
+        "right_quality": row.get("right_quality_score"),
+        "left_quality": row.get("left_quality_score"),
+    }
+
+
+def load_review_case_rows(out_dir: str) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for full_path in list_json_files(out_dir):
+        rows.append(build_review_case_row(full_path))
+    return rows
+
+
+def save_reviewed_case(case_obj: Dict[str, Any], reviewed_dir: str, original_file_name: str) -> str:
+    ensure_dir(reviewed_dir)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_name = original_file_name.rsplit(".", 1)[0]
+    out_name = f"{base_name}_reviewed_{ts}.json"
+    out_path = os.path.join(reviewed_dir, out_name)
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(case_obj, f, ensure_ascii=False, indent=2)
+
+    return out_path
