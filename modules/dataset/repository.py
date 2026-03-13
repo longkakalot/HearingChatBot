@@ -12,6 +12,7 @@ from modules.dataset.common import (
     get_side_quality_score,
     get_side_reliability,
     get_pressure_source,
+    get_side_rule_confidence,
 )
 
 
@@ -145,3 +146,73 @@ def save_reviewed_case(case_obj: Dict[str, Any], reviewed_dir: str, original_fil
         json.dump(case_obj, f, ensure_ascii=False, indent=2)
 
     return out_path
+
+
+def load_reviewed_case_rows(reviewed_dir: str) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+
+    if not os.path.isdir(reviewed_dir):
+        return rows
+
+    for fn in list_reviewed_json_files(reviewed_dir):
+        full_path = os.path.join(reviewed_dir, fn)
+
+        try:
+            obj = load_json_file(full_path)
+
+            right = safe_get(obj, "right", default={}) or {}
+            left = safe_get(obj, "left", default={}) or {}
+
+            rows.append({
+                "file_name": fn,
+                "full_path": full_path,
+                "side": "Right",
+                "engine_label": safe_get(obj, "review", "right", "engine_label"),
+                "reviewed_label": safe_get(obj, "review", "right", "reviewed_label"),
+                "label_changed": safe_get(obj, "review", "right", "label_changed"),
+                "doctor_confirmed": safe_get(obj, "review", "doctor_confirmed"),
+                "reviewer_name": safe_get(obj, "review", "reviewer_name"),
+                "reviewed_at": safe_get(obj, "review", "reviewed_at"),
+                "quality_score": get_side_quality_score(right),
+                "quality_reliability": get_side_reliability(right),
+                "rule_confidence": get_side_rule_confidence(right),
+                "source_json": safe_get(obj, "review", "source_json"),
+                "source_pdf": safe_get(obj, "meta", "source_pdf"),
+            })
+
+            rows.append({
+                "file_name": fn,
+                "full_path": full_path,
+                "side": "Left",
+                "engine_label": safe_get(obj, "review", "left", "engine_label"),
+                "reviewed_label": safe_get(obj, "review", "left", "reviewed_label"),
+                "label_changed": safe_get(obj, "review", "left", "label_changed"),
+                "doctor_confirmed": safe_get(obj, "review", "doctor_confirmed"),
+                "reviewer_name": safe_get(obj, "review", "reviewer_name"),
+                "reviewed_at": safe_get(obj, "review", "reviewed_at"),
+                "quality_score": get_side_quality_score(left),
+                "quality_reliability": get_side_reliability(left),
+                "rule_confidence": get_side_rule_confidence(left),
+                "source_json": safe_get(obj, "review", "source_json"),
+                "source_pdf": safe_get(obj, "meta", "source_pdf"),
+            })
+
+        except Exception as e:
+            rows.append({
+                "file_name": fn,
+                "full_path": full_path,
+                "side": "ERROR",
+                "engine_label": "ERROR",
+                "reviewed_label": "ERROR",
+                "label_changed": None,
+                "doctor_confirmed": None,
+                "reviewer_name": None,
+                "reviewed_at": None,
+                "quality_score": None,
+                "quality_reliability": None,
+                "rule_confidence": None,
+                "source_json": None,
+                "source_pdf": f"JSON parse error: {e}",
+            })
+
+    return rows

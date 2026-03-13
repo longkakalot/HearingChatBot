@@ -2,100 +2,18 @@
 from __future__ import annotations
 
 import os
-import json
 from typing import Dict, Any, List
 
 import pandas as pd
 import streamlit as st
 
-from modules.dataset.common import (
-    safe_get,
-    get_side_quality_score,
-    get_side_reliability,
-    get_side_rule_confidence,
+from modules.dataset.repository import (
+    ensure_dir,
+    load_reviewed_case_rows,
 )
 
 
 JERGER_LABELS = ["A", "As", "Ad", "B", "C", "Unknown"]
-
-
-def load_reviewed_cases(reviewed_dir: str) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-
-    if not os.path.isdir(reviewed_dir):
-        return rows
-
-    for fn in sorted(os.listdir(reviewed_dir), reverse=True):
-        if not fn.lower().endswith(".json"):
-            continue
-
-        full_path = os.path.join(reviewed_dir, fn)
-
-        if os.path.isdir(full_path):
-            continue
-
-        try:
-            with open(full_path, "r", encoding="utf-8") as f:
-                obj = json.load(f)
-
-            right = safe_get(obj, "right", default={}) or {}
-            left = safe_get(obj, "left", default={}) or {}
-
-            # Right ear
-            rows.append({
-                "file_name": fn,
-                "full_path": full_path,
-                "side": "Right",
-                "engine_label": safe_get(obj, "review", "right", "engine_label"),
-                "reviewed_label": safe_get(obj, "review", "right", "reviewed_label"),
-                "label_changed": safe_get(obj, "review", "right", "label_changed"),
-                "doctor_confirmed": safe_get(obj, "review", "doctor_confirmed"),
-                "reviewer_name": safe_get(obj, "review", "reviewer_name"),
-                "reviewed_at": safe_get(obj, "review", "reviewed_at"),
-                "quality_score": get_side_quality_score(right),
-                "quality_reliability": get_side_reliability(right),
-                "rule_confidence": get_side_rule_confidence(right),
-                "source_json": safe_get(obj, "review", "source_json"),
-                "source_pdf": safe_get(obj, "meta", "source_pdf"),
-            })
-
-            # Left ear
-            rows.append({
-                "file_name": fn,
-                "full_path": full_path,
-                "side": "Left",
-                "engine_label": safe_get(obj, "review", "left", "engine_label"),
-                "reviewed_label": safe_get(obj, "review", "left", "reviewed_label"),
-                "label_changed": safe_get(obj, "review", "left", "label_changed"),
-                "doctor_confirmed": safe_get(obj, "review", "doctor_confirmed"),
-                "reviewer_name": safe_get(obj, "review", "reviewer_name"),
-                "reviewed_at": safe_get(obj, "review", "reviewed_at"),
-                "quality_score": get_side_quality_score(left),
-                "quality_reliability": get_side_reliability(left),
-                "rule_confidence": get_side_rule_confidence(left),
-                "source_json": safe_get(obj, "review", "source_json"),
-                "source_pdf": safe_get(obj, "meta", "source_pdf"),
-            })
-
-        except Exception as e:
-            rows.append({
-                "file_name": fn,
-                "full_path": full_path,
-                "side": "ERROR",
-                "engine_label": "ERROR",
-                "reviewed_label": "ERROR",
-                "label_changed": None,
-                "doctor_confirmed": None,
-                "reviewer_name": None,
-                "reviewed_at": None,
-                "quality_score": None,
-                "quality_reliability": None,
-                "rule_confidence": None,
-                "source_json": None,
-                "source_pdf": f"JSON parse error: {e}",
-            })
-
-    return rows
 
 
 def rows_to_df(rows: List[Dict[str, Any]]) -> pd.DataFrame:
@@ -225,10 +143,8 @@ def _quality_error_summary(df: pd.DataFrame) -> pd.DataFrame:
 def render_evaluation_dashboard(out_dir: str):
     st.subheader("Evaluation Dashboard")
 
-    reviewed_dir = os.path.join(out_dir, "reviewed")
-    os.makedirs(reviewed_dir, exist_ok=True)
-
-    rows = load_reviewed_cases(reviewed_dir)
+    reviewed_dir = ensure_dir(os.path.join(out_dir, "reviewed"))
+    rows = load_reviewed_case_rows(reviewed_dir)
     df = rows_to_df(rows)
 
     if df.empty:
@@ -347,7 +263,6 @@ def render_evaluation_dashboard(out_dir: str):
     show_df = filtered[detail_cols].copy()
     st.dataframe(show_df, use_container_width=True, hide_index=True)
 
-    # CSV export
     csv_bytes = show_df.to_csv(index=False).encode("utf-8-sig")
     st.download_button(
         "⬇️ Export evaluation CSV",
